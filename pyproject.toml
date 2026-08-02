@@ -11,6 +11,7 @@ requires-python = ">=3.8"
 dependencies = [
     "nanobind>=2.0.0",
     "numpy",
+    "gmsh",
 ]
 
 [tool.scikit-build]
