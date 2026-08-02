@@ -150,6 +150,14 @@ public:
     // Throws std::runtime_error if the factorization or solve fails.
     // ------------------------------------------------------------------------
     const Vector& solve() {
+        // 1. Check for unconstrained system (rigid body modes)
+        const bool has_constraints = std::any_of(
+            constrained_.begin(), constrained_.end(), [](bool c) { return c; });
+        if (!has_constraints) {
+            throw std::runtime_error(
+                "System is unconstrained! Rigid body modes present.");
+        }
+
         Eigen::SimplicialLDLT<SparseMatrix> solver;
         solver.compute(K_);
         if (solver.info() != Eigen::Success) {
@@ -162,8 +170,17 @@ public:
             throw std::runtime_error(
                 "GlobalSolver::solve: SimplicialLDLT back-substitution failed.");
         }
+
+        // 2. Check for NaN values or explosive displacement magnitudes
+        if (u_.hasNaN() || u_.cwiseAbs().maxCoeff() > 1e10) {
+            throw std::runtime_error(
+                "Numerical instability or unconstrained system detected: "
+                "solution contains NaN or non-physical displacement (> 1e10).");
+        }
+
         return u_;
     }
+
 
     // --- Accessors ------------------------------------------------------------
     const SparseMatrix& K() const { return K_; }
