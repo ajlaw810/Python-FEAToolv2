@@ -1,3 +1,18 @@
 [build-system]
-requires = ["setuptools>=61", "wheel", "pybind11>=2.10"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.8.0", "nanobind>=2.0.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cpp_python_project"
+version = "0.2.0"
+description = "High-performance C++/Python FEA Extension built with nanobind"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "nanobind>=2.0.0",
+    "numpy",
+]
+
+[tool.scikit-build]
+build.verbose = true
+cmake.build-type = "Release"

@@ -1,2 +1,3 @@
-pybind11>=2.10
-pytest>=7.0
+nanobind>=2.0.0
+numpy
+pytest>=7.0
