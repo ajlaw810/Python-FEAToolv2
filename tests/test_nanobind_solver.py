@@ -164,3 +164,16 @@ def test_nanobind_solver_cantilever():
     )
 
     print("\n[CHECKPOINT 2.1 PASSED]: Nanobind Zero-Copy Bridge & Nodal Stress Recovery Verified!\n")
+
+
+def test_unconstrained_mesh_raises_runtime_error():
+    """Audit 3 Test: Verify that solving an unconstrained mesh raises RuntimeError."""
+    nodes, elements = build_cantilever_beam_mesh(
+        length=10.0, width=1.0, height=1.0, sub_len=2, sub_w=1, sub_h=1
+    )
+    solver = FEASolver(nodes, elements, E=210.0e9, nu=0.3)
+    # Do NOT call apply_fixed_bc
+    with pytest.raises(RuntimeError) as exc_info:
+        solver.solve()
+    print(f"\n[AUDIT 3 PASSED]: Unconstrained mesh correctly raised RuntimeError: {exc_info.value}")
+
