@@ -26,8 +26,9 @@ import numpy as np
 import pytest
 
 # --- Headless / off-screen Qt + VTK configuration --------------------------
-# Must be set before importing pyvista / QtInteractor (app_ui does this, but
-# set explicitly here to be defensive for any local imports).
+# Must be set before importing pyvista / QtInteractor. app_ui.py only forces
+# desktop mode when run as __main__ (python app_ui.py); when imported as a
+# module, it leaves the environment untouched so these settings are preserved.
 os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

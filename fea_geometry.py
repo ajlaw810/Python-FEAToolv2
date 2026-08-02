@@ -47,9 +47,11 @@ class CADGeometryPipeline:
     step_file : str
         Path to the ``.step`` / ``.stp`` CAD file to import.
     mesh_size_min : float, optional
-        Minimum target mesh element size (default 0.5).
+        Minimum target mesh element size. If ``None`` (default), computed
+        from the model bounding-box diagonal as ``max(diag * 0.03, 0.1)``.
     mesh_size_max : float, optional
-        Maximum target mesh element size (default 1.0).
+        Maximum target mesh element size. If ``None`` (default), computed
+        from the model bounding-box diagonal as ``max(diag * 0.08, 0.5)``.
     """
 
     # Gmsh element type code for a 10-node tetrahedron (TET10).
@@ -58,8 +60,8 @@ class CADGeometryPipeline:
     def __init__(
         self,
         step_file: str,
-        mesh_size_min: float = 0.5,
-        mesh_size_max: float = 1.0,
+        mesh_size_min: Optional[float] = None,
+        mesh_size_max: Optional[float] = None,
     ) -> None:
         global _active_pipeline
 
@@ -73,8 +75,8 @@ class CADGeometryPipeline:
             raise FileNotFoundError(f"STEP file not found: {step_file}")
 
         self.step_file = os.path.abspath(step_file)
-        self.mesh_size_min = float(mesh_size_min)
-        self.mesh_size_max = float(mesh_size_max)
+        self.mesh_size_min = mesh_size_min
+        self.mesh_size_max = mesh_size_max
 
         self._finalized = False
         self._mesh_generated = False
@@ -106,11 +108,56 @@ class CADGeometryPipeline:
             gmsh.model.occ.importShapes(self.step_file)
             gmsh.model.occ.synchronize()
 
+            # --- Bounding-box relative mesh sizing -------------------------
+            # If the caller did not supply explicit mesh size bounds, compute
+            # them from the model's bounding-box diagonal so the mesh density
+            # scales with the part size. This keeps complex STEP models
+            # (shafts, ball joints, etc.) in a responsive 2k-10k element
+            # range instead of exploding to hundreds of thousands.
+            if self.mesh_size_min is None or self.mesh_size_max is None:
+                xmin, ymin, zmin, xmax, ymax, zmax = (
+                    gmsh.model.getBoundingBox(-1, -1)
+                )
+                diag = float(np.sqrt(
+                    (xmax - xmin) ** 2
+                    + (ymax - ymin) ** 2
+                    + (zmax - zmin) ** 2
+                ))
+                if self.mesh_size_min is None:
+                    self.mesh_size_min = max(diag * 0.03, 0.1)
+                if self.mesh_size_max is None:
+                    self.mesh_size_max = max(diag * 0.08, 0.5)
+
+            self.mesh_size_min = float(self.mesh_size_min)
+            self.mesh_size_max = float(self.mesh_size_max)
+
             # --- High-order TET10 meshing configuration --------------------
             gmsh.option.setNumber("Mesh.ElementOrder", 2)
-            gmsh.option.setNumber("Mesh.HighOrderOptimize", 1)
+            # When auto-sizing (bounding-box relative) is used, the mesh is
+            # intentionally coarse for interactive responsiveness. The
+            # curvilinear high-order optimizer can abort the process on such
+            # coarse meshes (inverted elements it cannot untangle), so we
+            # disable it. Explicitly-supplied sizes (finer meshes) keep the
+            # optimizer enabled.
+            gmsh.option.setNumber(
+                "Mesh.HighOrderOptimize",
+                1 if (mesh_size_min is not None or mesh_size_max is not None) else 0,
+            )
             gmsh.option.setNumber("Mesh.MeshSizeMin", self.mesh_size_min)
             gmsh.option.setNumber("Mesh.MeshSizeMax", self.mesh_size_max)
+
+            # Prevent ultra-fine meshes from CAD-embedded characteristic
+            # lengths and curvature. STEP files often carry very small
+            # per-point/per-curve sizes that, when propagated by Gmsh's
+            # defaults (``Mesh.MeshSizeFromPoints=1``,
+            # ``Mesh.MeshSizeExtendFromBoundary=1``, and
+            # ``Mesh.MeshSizeFromCurvature=1``), override the global min/max
+            # bounds above and can generate millions of tiny TET10 elements
+            # (slow, unresponsive GUI loading). We force the mesh to honor
+            # our explicit ``mesh_size_min`` / ``mesh_size_max`` bounds.
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
+            gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
         except Exception:
             # Roll back gmsh initialization on import failure.
             self.close()
@@ -131,11 +178,25 @@ class CADGeometryPipeline:
     # Public API
     # -----------------------------------------------------------------------
     def generate_mesh(self) -> None:
-        """Generate the 3D solid mesh and extract all mesh arrays."""
+        """Generate the 3D solid mesh and extract all mesh arrays.
+
+        If the high-order (curvilinear) optimization fails — which can happen
+        on very coarse meshes of slender geometries where the initial linear
+        mesh has inverted elements — we retry with ``Mesh.HighOrderOptimize=0``
+        so the pipeline never crashes the host application.
+        """
         if self._finalized:
             raise RuntimeError("Pipeline has been closed; cannot generate mesh.")
 
-        gmsh.model.mesh.generate(3)
+        try:
+            gmsh.model.mesh.generate(3)
+        except Exception:
+            # High-order optimization failed (e.g. inverted elements on a
+            # coarse mesh). Retry without the curvilinear optimizer so the
+            # mesh is still produced and the app stays responsive.
+            gmsh.option.setNumber("Mesh.HighOrderOptimize", 0)
+            gmsh.model.mesh.generate(3)
+
         self._mesh_generated = True
 
         self._extract_nodes()

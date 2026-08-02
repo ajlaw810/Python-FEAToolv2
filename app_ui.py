@@ -43,6 +43,13 @@ viewport exists. In that case we render + wire up the interactive picker.
 Otherwise we degrade gracefully: all *selection logic* still runs on the
 extracted NumPy data (which is what Checkpoint 4.1 verifies) while GL
 rendering is skipped. Interactive desktop use is unaffected.
+
+Offscreen mode is NEVER configured by this module. When run directly as a
+desktop app (``python app_ui.py``), this module strips any offscreen
+environment variables that may have leaked from the environment and forces
+PyVista desktop interactive mode. When imported as a module (e.g. by headless
+pytest tests), the importing process's environment is left untouched so tests
+can configure ``QT_QPA_PLATFORM=offscreen`` themselves.
 """
 
 from __future__ import annotations
@@ -53,9 +60,13 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-# Headless / off-screen support must be configured before importing VTK.
-os.environ.setdefault("PYVISTA_OFF_SCREEN", "true")
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Desktop interactive mode is the default. When run directly as a desktop
+# app (python app_ui.py), strip any offscreen env vars that may have leaked
+# from the environment. When imported as a module (e.g. by headless pytest
+# tests), leave the importing process's environment untouched.
+if __name__ == "__main__":
+    os.environ.pop("QT_QPA_PLATFORM", None)
+    os.environ.pop("PYVISTA_OFF_SCREEN", None)
 os.environ["VTK_SILENT_WARNINGS"] = "1"
 
 # ---------------------------------------------------------------------------
@@ -94,6 +105,12 @@ _fmt.setStencilBufferSize(8)
 QSurfaceFormat.setDefaultFormat(_fmt)
 
 import pyvista as pv  # noqa: E402
+
+# Force desktop interactive rendering when run as a desktop app. When
+# imported as a module (headless pytest), leave PyVista's default alone so
+# the test's offscreen configuration is preserved.
+if __name__ == "__main__":
+    pv.OFF_SCREEN = False
 
 from PyQt6.QtWidgets import (  # noqa: E402
     QApplication,
@@ -166,13 +183,19 @@ def _build_polydata(mesh_data: MeshData, faces: Optional[np.ndarray] = None):
     return pv.PolyData(mesh_data.nodes, faces=faces_flat)
 
 
-def build_mesh_data(step_file: str, mesh_size_min: float = 0.5,
-                    mesh_size_max: float = 1.0) -> MeshData:
+def build_mesh_data(step_file: str,
+                    mesh_size_min: Optional[float] = None,
+                    mesh_size_max: Optional[float] = None) -> MeshData:
     """Run a STEP file through CADGeometryPipeline and return the snapshot.
 
     The pipeline is created and closed inside this function so the gmsh
     singleton is never held by the UI. Raises ``FileNotFoundError`` if the
     file is missing and propagates meshing failures from the pipeline.
+
+    When ``mesh_size_min`` / ``mesh_size_max`` are ``None`` (default), the
+    pipeline computes bounding-box relative sizes so the mesh density scales
+    with the part size — keeping complex STEP models in a responsive
+    2k-10k element range.
     """
     if not os.path.isfile(step_file):
         raise FileNotFoundError(f"STEP file not found: {step_file}")
@@ -347,9 +370,16 @@ class FEAAppMainWindow(QMainWindow):
                 self._set_status(f"Load failed: {exc}")
 
     def load_step_file(self, step_file: str,
-                       mesh_size_min: float = 0.5,
-                       mesh_size_max: float = 1.0) -> MeshData:
-        """Load a STEP file, mesh it, render it, and return the MeshData."""
+                       mesh_size_min: Optional[float] = None,
+                       mesh_size_max: Optional[float] = None) -> MeshData:
+        """Load a STEP file, mesh it, render it, and return the MeshData.
+
+        Uses fast, responsive bounding-box relative mesh sizes (computed by
+        :class:`CADGeometryPipeline` when ``mesh_size_min`` / ``mesh_size_max``
+        are ``None``) so GUI loading stays interactive. The pipeline also
+        disables Gmsh's CAD-embedded characteristic-length and curvature
+        propagation to prevent millions of tiny elements.
+        """
         mesh_data = build_mesh_data(
             step_file,
             mesh_size_min=mesh_size_min,
